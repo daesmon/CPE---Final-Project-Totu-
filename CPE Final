@@ -1,0 +1,367 @@
+#include <M5Core2.h>
+#include <SD.h>
+
+int imageWidth = 267;
+int imageHeight = 200;
+
+#include "BluetoothSerial.h"
+
+BluetoothSerial SerialBT;
+const float THRESHOLD = 0.1; // Set the threshold for detecting movement
+const float REMTHRESHOLD = 5;
+
+float frequency;             //Frequency var
+float x, y, z;               // Variables for storing the acceleration readings
+float prevX, prevY, prevZ;   // Variables for storing the previous acceleration readings
+int count = 0;               // Variable for storing the movement count
+float INTERVAL = 10000;
+
+unsigned long initialTime;     // Variable for storing the previous time
+unsigned long finalTime;  // Variable for storing the current time
+
+RTC_TimeTypeDef RTCtime; // RTC Data type
+
+int* tAlarm = nullptr;
+
+void updateTime(int* tArr) {
+  M5.Rtc.GetTime(&RTCtime);
+  int arr[3] = {RTCtime.Hours, RTCtime.Minutes, RTCtime.Seconds};
+  tArr = arr;
+}
+
+void alarmCheck(float frequency, int* alarmArray, int* timeArray) {
+  // Put 24 Hour time in seconds to compare difference
+  int rtcTime = timeArray[0]*60*60 + timeArray[1]*60 + timeArray[2];
+  int alarmTime = alarmArray[0]*60*60 + alarmArray[1]*60 + alarmArray[2];
+  int differenceTime = rtcTime - alarmTime;
+  
+  if (((differenceTime > -45*60 && differenceTime < 10*60) && frequency > REMTHRESHOLD) || differenceTime == 10*60) {
+    SerialBT.print("Time (in seconds): " + String(differenceTime) + "\n");
+    SerialBT.print("Alarm has gone off\n\n");
+    M5.Lcd.wakeup();
+    M5.Lcd.clear();
+    while (true) {
+      M5.Lcd.setTextSize(2);
+      M5.Lcd.drawString("Wake up!", M5.Lcd.width() / 2, M5.Lcd.height() / 3);
+      M5.Lcd.drawString("B to stop alarm.", M5.Lcd.width() / 2, 2*M5.Lcd.height() / 3);
+      M5.update();
+      M5.Spk.DingDong();
+      if (M5.BtnB.wasReleased() || M5.BtnB.pressedFor(1000, 200)) {
+        tAlarm = nullptr;
+        M5.Lcd.clear();
+        break;
+      }
+    }
+  }
+}
+
+// Define the menu options
+const char* menuItems[] = {"Set Time", "Frequency Demo", "Set Alarm", "Sleep Mode"};
+int menuIndex; // Current menu option index
+
+void sleepMode() {
+  M5.Lcd.clear();
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setTextDatum(MC_DATUM);
+  if (tAlarm != nullptr) M5.Lcd.drawString("You are set to wake up at " + printTime(tAlarm), M5.Lcd.width() / 2, M5.Lcd.height() / 3);
+  else M5.Lcd.drawString("You did not set an alarm", M5.Lcd.width() / 2, M5.Lcd.height() / 3);
+  M5.Lcd.setTextDatum(MC_DATUM);
+  M5.Lcd.drawString("Good night ;)", M5.Lcd.width() / 2, 2*M5.Lcd.height() / 3);
+  delay(2000);
+  // Send M5 to energy saving mode
+  M5.Lcd.sleep();
+}
+
+String printTime(int* timeA) { // Time Array pointer.
+    String time = "";
+    if (timeA[0] < 10) time += '0'; // Displays ‘0’ character when time is less than 10 for double digit format.
+    time += String(timeA[0]) + ':';
+    
+    if (timeA[1] < 10) time += '0'; // Displays ‘0’ character when time is less than 10 for double digit format.
+    time += String(timeA[1]) + ':';
+      
+    if (timeA[2] < 10) time += '0'; // Displays ‘0’ character when time is less than 10 for double digit format.
+    time += String(timeA[2]);
+
+    return time;
+}
+
+
+void frequencyDemo() {
+  // Read the current time
+  finalTime = millis();
+  
+  // Read the acceleration values
+  M5.IMU.getAccelData(&x, &y, &z);
+
+  // Check if there has been a significant change in the acceleration readings
+  if (abs(x - prevX) > THRESHOLD || abs(y - prevY) > THRESHOLD || abs(z - prevZ) > THRESHOLD) {
+    // Increment the movement count
+    count++;
+  }
+
+  // Store the current acceleration readings and time for the next iteration
+  prevX = x;
+  prevY = y;
+  prevZ = z;
+  
+  // Check if the measurement interval has elapsed
+  if (finalTime - initialTime >= INTERVAL) {
+    initialTime = finalTime;
+
+    // Calculate the movement frequency in movements/second
+    frequency = count / (INTERVAL / 1000.0);
+    // Reset the movement count
+    count = 0;
+
+    // Send information to Bluetooth Terminal
+    M5.Rtc.GetTime(&RTCtime);
+    int arr[3] = {RTCtime.Hours, RTCtime.Minutes, RTCtime.Seconds};
+    String timeString = printTime(arr);
+    SerialBT.print("Time: ");
+    SerialBT.print(timeString);
+    if (menuIndex == 3) {
+      SerialBT.print("\nPossible Stage of sleep: ");
+      if (frequency > 5) SerialBT.print("Non-REM");
+      else SerialBT.print("Rapid Eye Movement (REM)");
+    }
+    SerialBT.print("\nFrequency: ");
+    SerialBT.print(frequency);
+    SerialBT.print(" mps\n\n");
+    
+  }
+}
+
+int* setupTime() {
+  int * timeArray = new int[3];
+  timeArray[0] = 0;
+  timeArray[1] = 0;
+  timeArray[2] = 0;
+  
+  M5.Lcd.setTextSize(3);
+  
+  while (true) { //Set hour
+    M5.update();
+    if (M5.BtnA.wasReleased() || M5.BtnA.pressedFor(1000, 200)) { //Uses button features
+      timeArray[0] = timeArray[0] - 1; //Increments down
+      if (timeArray[0] < 0) timeArray[0] = 23;
+    }
+ 
+    if (M5.BtnC.wasReleased() || M5.BtnC.pressedFor(1000, 200)) {
+      timeArray[0] = timeArray[0] + 1; //Increments Up
+      if (timeArray[0] > 23) timeArray[0] = 0;
+    }
+ 
+    M5.Lcd.drawString(printTime(timeArray), M5.Lcd.width() / 2, M5.Lcd.height() / 2);
+ 
+   if (M5.BtnB.wasReleased() || M5.BtnB.pressedFor(1000, 200)) {
+    break;
+   }
+  }
+ 
+ while (true) { //Set minutes
+    M5.update();
+    if (M5.BtnA.wasReleased() || M5.BtnA.pressedFor(1000, 200)) {
+      timeArray[1] = timeArray[1] - 1;
+      if (timeArray[1] < 0) timeArray[1] = 59;
+    }
+ 
+    if (M5.BtnC.wasReleased() || M5.BtnC.pressedFor(1000, 200)) {
+      timeArray[1] = timeArray[1] + 1;
+      if (timeArray[1] > 59) timeArray[1] = 0;
+    }
+ 
+    M5.Lcd.drawString(printTime(timeArray), M5.Lcd.width() / 2, M5.Lcd.height() / 2);
+ 
+   if (M5.BtnB.wasReleased() || M5.BtnB.pressedFor(1000, 200)) {
+    break;
+   }
+  }
+ 
+  while (true) { //Set seconds
+    M5.update();
+    M5.Lcd.setCursor(0,0);
+    if (M5.BtnA.wasReleased() || M5.BtnA.pressedFor(1000, 200)) {
+      timeArray[2] = timeArray[2] - 1;
+      if (timeArray[2] < 0) timeArray[2] = 59;
+    }
+ 
+    if (M5.BtnC.wasReleased() || M5.BtnC.pressedFor(1000, 200)) {
+      timeArray[2] = timeArray[2] + 1;
+      if (timeArray[2] > 59) timeArray[2] = 0;
+    }
+
+    M5.Lcd.drawString(printTime(timeArray), M5.Lcd.width() / 2, M5.Lcd.height() / 2);
+    
+    if (M5.BtnB.wasReleased() || M5.BtnB.pressedFor(1000, 200)) {
+      break;
+   }
+  }
+  M5.Lcd.setCursor(0,0);
+  printTime(timeArray);
+
+  return timeArray;
+
+}
+
+void menuSelection() {  
+  // Update state of M5 components such as registered button
+  M5.update();
+
+  // Update movement count and frequency
+  frequencyDemo();
+
+  // Get the current time from the RTC clock
+  M5.Rtc.GetTime(&RTCtime);
+  
+  // Print the current time to the screen
+  M5.Rtc.GetTime(&RTCtime);
+  M5.Lcd.setTextDatum(MC_DATUM);
+  M5.Lcd.setTextSize(1.7);
+  int timeArray[] = {RTCtime.Hours, RTCtime.Minutes, RTCtime.Seconds};
+  M5.Lcd.drawString(printTime(timeArray), M5.Lcd.width() / 2, 0);
+  
+  // Print the welcome message
+  M5.Lcd.setTextDatum(MC_DATUM);
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.drawString("Welcome to Totu!", M5.Lcd.width() / 2, 50);
+
+  M5.Lcd.setTextSize(1.5);
+  M5.Lcd.drawString("Please select an option", M5.Lcd.width() / 2, M5.Lcd.fontHeight() * 3+50);
+  
+  // Print the current menu option to the screen with Menu Selection Instructions
+  M5.Lcd.setTextSize(1.5);
+  M5.Lcd.drawString(menuItems[menuIndex], M5.Lcd.width() / 2, M5.Lcd.height() / 2 + 30);
+  M5.Lcd.drawString("<----", M5.Lcd.width() / 4, M5.Lcd.height() / 2 + 30);
+  M5.Lcd.drawString("---->", 3 * (M5.Lcd.width() /4), M5.Lcd.height() / 2 + 30);
+  M5.Lcd.drawString("Button C", M5.Lcd.width() / 4, M5.Lcd.height() / 2 + 30 + M5.Lcd.fontHeight() * 3);
+  M5.Lcd.drawString("Button A", 3* (M5.Lcd.width() /4), M5.Lcd.height() / 2 + 30 + M5.Lcd.fontHeight() * 3);
+  M5.Lcd.drawString("Button B", M5.Lcd.width() / 2, M5.Lcd.height() / 2 + 30 + M5.Lcd.fontHeight() * 3);
+
+  // Check if button A is pressed
+  if (M5.BtnA.wasReleased() || M5.BtnA.pressedFor(1000, 200)) {
+    // Move to the previous menu option
+    M5.Lcd.drawString("                                       ", M5.Lcd.width() / 2, M5.Lcd.height() / 2 + 30);
+    menuIndex--;
+    // If menuIndex is less than 0, set it to the last menu option
+    if (menuIndex < 0) {
+      menuIndex = 3;
+    }
+  }
+
+  // Check if button B is pressed
+  if (M5.BtnB.wasReleased() || M5.BtnB.pressedFor(1000, 200)) {
+
+    // Select the current menu option
+    if (menuIndex == 0) {
+      M5.Lcd.clear();
+      while (true) {
+        if (M5.BtnB.wasReleased() || M5.BtnB.pressedFor(1000, 200)) {
+            int* timeArray = setupTime();
+            
+            RTCtime.Hours = timeArray[0];
+            RTCtime.Minutes = timeArray[1];
+            RTCtime.Seconds = timeArray[2];
+            M5.Rtc.SetTime(&RTCtime);
+
+            delete [] timeArray;
+            M5.Lcd.clear();
+            break;
+        }
+      }
+    } else if (menuIndex == 1) {
+      M5.Lcd.clear();
+      while (true) {
+        frequencyDemo();
+
+        M5.Lcd.setTextSize(2);
+        M5.Lcd.setTextDatum(MC_DATUM);
+        M5.Rtc.GetTime(&RTCtime);
+        int tArr[] = {RTCtime.Hours, RTCtime.Minutes, RTCtime.Seconds};
+        M5.Lcd.drawString(printTime(tArr), M5.Lcd.width() / 2, 0);
+        
+        M5.Lcd.setTextDatum(MC_DATUM);
+        M5.Lcd.setTextSize(2);
+        M5.Lcd.drawString("Movement count:", M5.Lcd.width() / 2, M5.Lcd.height() / 3);
+        M5.Lcd.drawString(String(count), M5.Lcd.width() / 2, M5.Lcd.height() / 3 + M5.Lcd.fontHeight()*2);
+        
+        M5.Lcd.setTextDatum(MC_DATUM);
+        M5.Lcd.setTextSize(2);
+        M5.Lcd.drawString("Frequency:", M5.Lcd.width() / 2, 2 * M5.Lcd.height() / 3);
+        M5.Lcd.drawString(String(frequency) + " mps", M5.Lcd.width() / 2, 2 * M5.Lcd.height() / 3 + M5.Lcd.fontHeight()*2);
+
+        
+        M5.update();
+        if (M5.BtnB.wasReleased() || M5.BtnB.pressedFor(1000, 200)) {
+          M5.Lcd.clear();
+          break;
+        }
+        }
+    } else if (menuIndex == 2) {
+      M5.Lcd.clear();
+      tAlarm = setupTime();
+      frequency = 0;
+      M5.Lcd.clear();
+    } else if (menuIndex == 3) {
+      SerialBT.print("Entering Sleep Mode\n\n");
+      sleepMode();
+      while (true) {
+        frequencyDemo();
+        M5.update();
+        if (tAlarm != nullptr) {
+          updateTime(timeArray);
+          alarmCheck(frequency, tAlarm, timeArray);
+        }
+        if (M5.BtnB.wasReleased() || M5.BtnB.pressedFor(1000, 200)) {
+          SerialBT.print("Exiting Sleep Mode\n\n");
+          M5.Lcd.wakeup();
+          M5.Lcd.clear();
+          break;
+        }
+      }
+    }
+
+    
+  }
+
+  // Check if button C is pressed
+  if (M5.BtnC.wasReleased() || M5.BtnC.pressedFor(1000, 200)) {
+    // Move to the next menu option and clear the previous menu option from screen
+    M5.Lcd.drawString("               ", M5.Lcd.width() / 2, M5.Lcd.height() / 2 + 30);
+    menuIndex++;
+    // If menuIndex is greater than the number of menu options, set it to the first menu option
+    if (menuIndex > 3) {
+      menuIndex = 0;
+    }
+  }
+  if (tAlarm != nullptr) {
+    alarmCheck(frequency, tAlarm, timeArray);
+  }
+  // Wait for a short time before checking the button states again
+  delay(10);
+}
+
+void setup() {
+  // Initialize the M5Stack and the serial port
+  M5.begin();
+  M5.IMU.Init(); //Initialise IMU
+  M5.Lcd.fillScreen(BLACK);  //Set the screen background color to black. 
+  M5.Lcd.setTextColor(WHITE, BLACK);  //Sets the foreground color and background color of the displayed text.
+  M5.Lcd.setTextSize(1);  //Set the font size
+
+  SerialBT.begin("Totu!"); // Begin Bluetooth Connection
+
+  menuIndex = 0;
+
+  frequency = 0;
+  initialTime = millis();
+
+  // Initialize the M5Stack and the serial port
+  M5.begin();
+  Serial.begin(9600);
+}
+
+void loop() {
+  menuSelection();
+
+}
